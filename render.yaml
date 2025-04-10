@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: g2g-telegram-notifier
+    env: python
+    buildCommand: chmod +x buildpack.sh && ./buildpack.sh && pip install -r requirements.txt
+    startCommand: python g2g-telegram-cloud.py
+    plan: free
+    envVars:
+      - key: RENDER
+        value: true
+      - key: GOOGLE_CHROME_BIN
+        value: /usr/bin/google-chrome-stable
+      - key: CHROMEDRIVER_PATH
+        value: /usr/local/bin/chromedriver
+      - key: TELEGRAM_TOKEN
+        value: 7930326081:AAEciV70HcbcJuonGLli_RnQrT_tx9z-4-4
+      - key: TELEGRAM_CHAT_ID
+        value: 1356415148
+      - key: G2G_USERNAME
+        sync: false
+      - key: G2G_PASSWORD
+        sync: false
