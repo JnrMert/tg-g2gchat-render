@@ -55,27 +55,62 @@ class G2GScraper:
         try:
             # Kullanıcı adı/şifre kontrolü
             if not G2G_USERNAME or not G2G_PASSWORD:
-                log_message("G2G kullanıcı adı veya şifresi tanımlanmamış!")
+                log_message("G2G kullanıcı adı veya şifresi tanımlanmamış!", is_error=True)
                 send_telegram_message("⚠️ G2G kullanıcı adı veya şifresi çevresel değişkenlerde tanımlanmamış! Lütfen doğru şekilde ayarlayın.")
-                app_status["errors"].append("G2G kullanıcı adı veya şifresi tanımlanmamış")
+                app_status["errors"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "message": "G2G kullanıcı adı veya şifresi tanımlanmamış!"
+                })
                 return False
             
-            log_message("G2G.com'a giriş yapılıyor...")
+            log_message(f"G2G.com'a giriş yapılıyor... Kullanıcı: {G2G_USERNAME}")
             
             # Önce ana sayfaya git - cookie ve CSRF token almak için
             log_message("Ana sayfa yükleniyor...")
-            main_page = self.session.get('https://www.g2g.com/', timeout=30)
-            if main_page.status_code != 200:
-                log_message(f"Ana sayfa yüklenemedi. Status code: {main_page.status_code}")
-                app_status["errors"].append(f"Ana sayfa yüklenemedi. Status code: {main_page.status_code}")
+            try:
+                main_page = self.session.get('https://www.g2g.com/', timeout=30)
+                log_message(f"Ana sayfa yanıt kodu: {main_page.status_code}")
+                
+                if main_page.status_code != 200:
+                    log_message(f"Ana sayfa yüklenemedi. Status code: {main_page.status_code}", is_error=True)
+                    app_status["errors"].append({
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "message": f"Ana sayfa yüklenemedi. Status code: {main_page.status_code}"
+                    })
+                    return False
+                
+                # Cookie'leri logla
+                log_message(f"Alınan çerezler: {dict(self.session.cookies)}")
+            except Exception as e:
+                log_message(f"Ana sayfa yüklenirken hata: {str(e)}", is_error=True)
+                app_status["errors"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "message": f"Ana sayfa yüklenirken hata: {str(e)}"
+                })
                 return False
             
             # Login sayfasına git
             log_message("Login sayfası yükleniyor...")
-            login_page = self.session.get('https://www.g2g.com/login', timeout=30)
-            if login_page.status_code != 200:
-                log_message(f"Login sayfası yüklenemedi. Status code: {login_page.status_code}")
-                app_status["errors"].append(f"Login sayfası yüklenemedi. Status code: {login_page.status_code}")
+            try:
+                login_page = self.session.get('https://www.g2g.com/login', timeout=30)
+                log_message(f"Login sayfası yanıt kodu: {login_page.status_code}")
+                
+                if login_page.status_code != 200:
+                    log_message(f"Login sayfası yüklenemedi. Status code: {login_page.status_code}", is_error=True)
+                    app_status["errors"].append({
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "message": f"Login sayfası yüklenemedi. Status code: {login_page.status_code}"
+                    })
+                    return False
+                
+                # Login HTML içeriğini logla (kısmi)
+                log_message(f"Login sayfası içeriği (ilk 200 karakter): {login_page.text[:200]}...")
+            except Exception as e:
+                log_message(f"Login sayfası yüklenirken hata: {str(e)}", is_error=True)
+                app_status["errors"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "message": f"Login sayfası yüklenirken hata: {str(e)}"
+                })
                 return False
             
             # BeautifulSoup ile login sayfasını parse et
@@ -85,15 +120,46 @@ class G2GScraper:
             csrf_token = None
             form_inputs = {}
             
-            # Muhtemel form ve input'ları bul
-            login_form = soup.find('form')
-            if login_form:
+            # Form ve input'ları logla
+            forms = soup.find_all('form')
+            log_message(f"Sayfada bulunan form sayısı: {len(forms)}")
+            
+            login_form = None
+            
+            for i, form in enumerate(forms):
+                log_message(f"Form #{i+1} action: {form.get('action', 'None')} method: {form.get('method', 'None')}")
+                
+                # Login formu olabilecek formu seç
+                if 'login' in form.get('action', '') or 'login' in form.get('id', '') or 'login' in form.get('class', ''):
+                    login_form = form
+                    log_message(f"Login formu bulundu: Form #{i+1}")
+                
+                # Tüm form girdilerini logla
+                inputs = form.find_all('input')
+                log_message(f"Form #{i+1} input sayısı: {len(inputs)}")
+                for input_field in inputs:
+                    log_message(f"Input: name={input_field.get('name', 'None')} type={input_field.get('type', 'None')} value={input_field.get('value', 'None')}")
+            
+            # Login formu bulunamadıysa, ilk formu kullan
+            if not login_form and forms:
+                login_form = forms[0]
+                log_message("Spesifik login formu bulunamadı, ilk form kullanılacak")
+            
+            # Form bulunmazsa, doğrudan API'yi deneyelim
+            if not login_form:
+                log_message("Hiçbir form bulunamadı, doğrudan API denenecek", is_error=True)
+            else:
+                # Form input'larını topla
                 inputs = login_form.find_all('input')
                 for input_field in inputs:
                     if input_field.get('name'):
                         if 'csrf' in input_field.get('name').lower():
                             csrf_token = input_field.get('value')
+                            log_message(f"CSRF token bulundu: {csrf_token}")
                         form_inputs[input_field.get('name')] = input_field.get('value', '')
+            
+            # Tüm formdan toplanan verileri logla
+            log_message(f"Form input'ları: {form_inputs}")
             
             # Giriş verilerini hazırla
             login_data = {
@@ -107,20 +173,23 @@ class G2GScraper:
                 if key not in login_data:
                     login_data[key] = value
             
+            log_message(f"Giriş verileri (parola gizli): {str(login_data).replace(G2G_PASSWORD, '********')}")
+            
             # CSRF token varsa header'a ekle
             if csrf_token:
                 self.session.headers.update({
                     'X-CSRF-TOKEN': csrf_token
                 })
+                log_message("CSRF token header'a eklendi")
             
             # Referrer ayarla
             self.session.headers.update({
                 'Referer': 'https://www.g2g.com/login'
             })
+            log_message("Referer header'a eklendi")
             
-            # Giriş yap
+            # Giriş yapma denemesi - POST
             log_message("Giriş yapılıyor...")
-            login_response = None
             
             # Form gönderim URL'si - login formundan alınabilir
             login_url = 'https://www.g2g.com/login'
@@ -130,42 +199,100 @@ class G2GScraper:
                 if login_url.startswith('/'):
                     login_url = 'https://www.g2g.com' + login_url
             
-            # Giriş yapma denemesi - POST
-            login_response = self.session.post(login_url, data=login_data, allow_redirects=True, timeout=30)
+            log_message(f"Login URL: {login_url}")
             
-            # Giriş başarılı mı kontrol et
-            # Başarılı bir giriş genellikle ana sayfaya veya dashboard'a yönlendirilir
+            # Giriş yapma denemesi - POST
+            try:
+                login_response = self.session.post(login_url, data=login_data, allow_redirects=True, timeout=30)
+                log_message(f"Login yanıt kodu: {login_response.status_code}")
+                log_message(f"Login yanıt URL: {login_response.url}")
+                
+                # Yanıt içeriğinin ilk kısmını logla
+                log_message(f"Login yanıt içeriği (ilk 200 karakter): {login_response.text[:200]}...")
+                
+                # Yanıt headers'ı logla
+                log_message(f"Login yanıt headers: {dict(login_response.headers)}")
+                
+                # Cookie'leri logla
+                log_message(f"Login sonrası çerezler: {dict(self.session.cookies)}")
+            except Exception as e:
+                log_message(f"Login isteği gönderilirken hata: {str(e)}", is_error=True)
+                app_status["errors"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "message": f"Login isteği gönderilirken hata: {str(e)}"
+                })
+                return False
+            
+            # API Yanıtı mı?
+            try:
+                json_response = login_response.json()
+                log_message(f"JSON yanıtı: {json_response}")
+                if json_response.get('status') == 'success':
+                    self.logged_in = True
+                    app_status["is_logged_in"] = True
+                    log_message("G2G.com'a başarıyla giriş yapıldı (API yanıtı).")
+                    return True
+                else:
+                    log_message(f"API yanıtında hata: {json_response.get('message', 'Bilinmeyen hata')}", is_error=True)
+            except:
+                # JSON değil, HTML yanıtı
+                log_message("Login yanıtı JSON formatında değil, HTML olabilir")
             
             # Dashboard sayfasına erişmeyi dene
             log_message("Giriş kontrolü yapılıyor...")
-            dashboard_page = self.session.get('https://www.g2g.com/dashboard', timeout=30)
+            try:
+                dashboard_page = self.session.get('https://www.g2g.com/dashboard', timeout=30)
+                log_message(f"Dashboard sayfası yanıt kodu: {dashboard_page.status_code}")
+                log_message(f"Dashboard URL: {dashboard_page.url}")
+                
+                # Giriş başarılı mı kontrol et - kullanıcı adının sayfada görünüp görünmediğine bak
+                soup = BeautifulSoup(dashboard_page.content, 'html.parser')
+                
+                # HTML içeriğini analiz et
+                user_elements = soup.find_all(string=re.compile('profile|account|logout', re.IGNORECASE))
+                log_message(f"Dashboard sayfasında profil/hesap/çıkış elementleri: {len(user_elements)}")
+                
+                if dashboard_page.status_code == 200 and user_elements:
+                    self.logged_in = True
+                    app_status["is_logged_in"] = True
+                    log_message("G2G.com'a başarıyla giriş yapıldı (dashboard erişimi başarılı).")
+                    send_telegram_message("✅ G2G.com'a başarıyla giriş yapıldı!")
+                    return True
+            except Exception as e:
+                log_message(f"Dashboard kontrolü sırasında hata: {str(e)}", is_error=True)
             
-            # Giriş başarılı mı kontrol et - kullanıcı adının sayfada görünüp görünmediğine bak
-            soup = BeautifulSoup(dashboard_page.content, 'html.parser')
-            user_elements = soup.find_all(string=re.compile('profile|account|logout', re.IGNORECASE))
-            
-            if dashboard_page.status_code == 200 and user_elements:
-                self.logged_in = True
-                app_status["is_logged_in"] = True
-                log_message("G2G.com'a başarıyla giriş yapıldı.")
-                return True
-            else:
-                # Chat sayfasına erişmeyi dene - bazı siteler dashboard yerine ana sayfaya yönlendirebilir
+            # Chat sayfasına erişmeyi dene
+            try:
+                log_message("Chat sayfası kontrol ediliyor...")
                 chat_page = self.session.get('https://www.g2g.com/chat/#/', timeout=30)
+                log_message(f"Chat sayfası yanıt kodu: {chat_page.status_code}")
+                log_message(f"Chat URL: {chat_page.url}")
+                
+                # Chat sayfası içeriğini kontrol et
                 if chat_page.status_code == 200 and 'g-channel-item--main' in chat_page.text:
                     self.logged_in = True
                     app_status["is_logged_in"] = True
                     log_message("G2G.com'a başarıyla giriş yapıldı (chat erişimi başarılı).")
+                    send_telegram_message("✅ G2G.com'a başarıyla giriş yapıldı!")
                     return True
-                
-                log_message("G2G.com'a giriş yapılamadı. Yetkilendirme başarısız.")
-                app_status["errors"].append("G2G.com'a giriş yapılamadı. Yetkilendirme başarısız.")
-                send_telegram_message("❌ G2G'ye giriş yapılamadı. Kullanıcı adı ve şifrenizi kontrol edin.")
-                return False
+            except Exception as e:
+                log_message(f"Chat sayfası kontrolü sırasında hata: {str(e)}", is_error=True)
+            
+            # Giriş hata mesajını logla
+            log_message("G2G.com'a giriş yapılamadı. Yetkilendirme başarısız.", is_error=True)
+            app_status["errors"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "message": "G2G.com'a giriş yapılamadı. Yetkilendirme başarısız."
+            })
+            send_telegram_message("❌ G2G'ye giriş yapılamadı. Kullanıcı adı ve şifrenizi kontrol edin.")
+            return False
             
         except Exception as e:
-            log_message(f"Giriş sırasında hata: {str(e)}")
-            app_status["errors"].append(f"Giriş sırasında hata: {str(e)}")
+            log_message(f"Giriş sırasında beklenmeyen hata: {str(e)}", is_error=True)
+            app_status["errors"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "message": f"Giriş sırasında beklenmeyen hata: {str(e)}"
+            })
             send_telegram_message(f"❌ G2G giriş hatası: {str(e)[:100]}...")
             return False
     
@@ -185,8 +312,11 @@ class G2GScraper:
             chat_response = self.session.get('https://www.g2g.com/chat/#/', timeout=30)
             
             if chat_response.status_code != 200:
-                log_message(f"Chat sayfası yüklenemedi. Status code: {chat_response.status_code}")
-                app_status["errors"].append(f"Chat sayfası yüklenemedi. Status code: {chat_response.status_code}")
+                log_message(f"Chat sayfası yüklenemedi. Status code: {chat_response.status_code}", is_error=True)
+                app_status["errors"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "message": f"Chat sayfası yüklenemedi. Status code: {chat_response.status_code}"
+                })
                 # Oturum düşmüş olabilir
                 self.logged_in = False
                 app_status["is_logged_in"] = False
@@ -197,25 +327,30 @@ class G2GScraper:
             
             # Chat içeriğini kontrol et
             chat_items = soup.select('.g-channel-item--main')
+            log_message(f"Chat öğesi sayısı: {len(chat_items)}")
             
             if not chat_items:
                 # JavaScript tabanlı sayfada elementler doğrudan görünmeyebilir
                 # Bu durumda JavaScript kodundan veri çekmeyi deneyelim
-                # Genellikle sayfa kaynak kodunda JSON verisi bulunabilir
+                log_message("Chat öğeleri bulunamadı, JavaScript verisi aranıyor...")
                 
                 # window.__INITIAL_STATE__ veya benzer bir değişken içinde veri arayalım
                 initial_state_pattern = re.compile(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', re.DOTALL)
                 match = initial_state_pattern.search(chat_response.text)
                 
                 if match:
+                    log_message("__INITIAL_STATE__ verisi bulundu, analiz ediliyor...")
                     try:
                         # JSON veriyi parse et
                         json_data = json.loads(match.group(1))
                         
+                        # JSON yapısını logla (kısmi)
+                        log_message("JSON yapısı anahtarlar: " + str(list(json_data.keys())))
+                        
                         # JSON yapısına göre mesajları çıkarmayı dene
-                        # Bu kısım G2G'nin spesifik veri yapısına göre özelleştirilmelidir
                         if 'chat' in json_data and 'channels' in json_data['chat']:
                             channels = json_data['chat']['channels']
+                            log_message(f"Kanal sayısı: {len(channels)}")
                             
                             # Yeni mesajları topla
                             new_messages = []
@@ -224,6 +359,7 @@ class G2GScraper:
                             for channel_id, channel in channels.items():
                                 if 'unreadCount' in channel and channel['unreadCount'] > 0:
                                     unread_count += channel['unreadCount']
+                                    log_message(f"Kanal '{channel.get('name', 'Bilinmeyen')}' için okunmamış mesaj: {channel['unreadCount']}")
                                     
                                     # Mesaj bilgilerini al
                                     sender_name = channel.get('name', 'Bilinmeyen')
@@ -241,12 +377,14 @@ class G2GScraper:
                                             'channel_id': channel_id
                                         })
                                         last_messages.add(message_id)
+                                        log_message(f"Yeni mesaj eklendi: {sender_name} - {message_text[:30]}...")
                                         
                                         # Son 100 mesaj ile sınırla
                                         if len(last_messages) > 100:
                                             last_messages = set(list(last_messages)[-100:])
                             
                             app_status["unread_count"] = unread_count
+                            log_message(f"Toplam okunmamış mesaj sayısı: {unread_count}")
                             
                             # Yeni mesajları bildir
                             if new_messages:
@@ -255,42 +393,54 @@ class G2GScraper:
                                 app_status["new_messages_count"] += len(new_messages)
                                 app_status["total_messages_found"] += len(new_messages)
                                 return
+                            else:
+                                log_message("Yeni mesaj bulunamadı.")
+                        else:
+                            log_message("JSON yapısında 'chat' veya 'channels' anahtarı bulunamadı", is_error=True)
                     except Exception as e:
-                        log_message(f"JSON verisi işlenirken hata: {str(e)}")
-                        app_status["errors"].append(f"JSON verisi işlenirken hata: {str(e)}")
+                        log_message(f"JSON verisi işlenirken hata: {str(e)}", is_error=True)
+                        app_status["errors"].append({
+                            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "message": f"JSON verisi işlenirken hata: {str(e)}"
+                        })
                 
                 # Mesajlar bulunamadı - sayfa yapısı beklenenden farklı
-                log_message("Chat mesajları bulunamadı. Sayfa yapısı beklenenden farklı olabilir.")
-                # Hata olmasa da sayfanın XHR istekleri incelenebilir
-                # G2G'nin API endpoint'lerini belirlemek için ağ trafiği analiz edilmeli
+                log_message("Chat mesajları bulunamadı. Sayfa yapısı beklenenden farklı olabilir.", is_error=True)
+                # Sayfanın ilk 1000 karakterini logla
+                log_message(f"Sayfa içeriği (ilk 1000 karakter): {chat_response.text[:1000]}...")
             else:
                 # Chat itemleri bulundu, işle
-                log_message(f"{len(chat_items)} chat öğesi bulundu.")
+                log_message(f"{len(chat_items)} chat öğesi bulundu, analiz ediliyor...")
                 
                 new_messages = []
                 unread_count = 0
                 
                 # Her bir chat öğesini işle
-                for item in chat_items:
+                for i, item in enumerate(chat_items):
                     try:
+                        log_message(f"Chat öğesi #{i+1} analiz ediliyor...")
+                        
                         # Göndereni bul
                         sender_element = item.select_one('.text-body1')
                         sender = sender_element.text.strip() if sender_element else "Bilinmeyen"
+                        log_message(f"Gönderen: {sender}")
                         
                         # Mesaj metnini bul
                         message_element = item.select_one('.text-secondary')
                         message_text = message_element.text.strip() if message_element else "Mesaj içeriği alınamadı"
+                        log_message(f"Mesaj: {message_text[:30]}...")
                         
                         # Okunmamış sayısını bul
                         badge_element = item.parent.select_one('.q-badge[role="alert"]')
                         if badge_element:
                             try:
-                                unread_count += int(badge_element.text.strip())
+                                badge_count = int(badge_element.text.strip())
+                                unread_count += badge_count
+                                log_message(f"Okunmamış sayısı: {badge_count}")
                             except ValueError:
-                                pass
+                                log_message("Badge sayısı tam sayıya çevrilemedi")
                         
-                        # Benzersiz ID oluştur - Gerçek channel ID alınamıyorsa
-                        # gönderenin adı ve mesaj metni birleşimi kullanılabilir
+                        # Benzersiz ID oluştur
                         message_id = f"{sender}:{message_text}"
                         
                         # Eğer yeni bir mesaj ise, ekle
@@ -300,19 +450,24 @@ class G2GScraper:
                                 'message': message_text
                             })
                             last_messages.add(message_id)
+                            log_message(f"Yeni mesaj eklendi: {sender} - {message_text[:30]}...")
                             
                             # Son 100 mesaj ile sınırla
                             if len(last_messages) > 100:
                                 last_messages = set(list(last_messages)[-100:])
                     except Exception as e:
-                        log_message(f"Chat öğesi işlenirken hata: {str(e)}")
-                        app_status["errors"].append(f"Chat öğesi işlenirken hata: {str(e)}")
+                        log_message(f"Chat öğesi #{i+1} işlenirken hata: {str(e)}", is_error=True)
+                        app_status["errors"].append({
+                            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "message": f"Chat öğesi işlenirken hata: {str(e)}"
+                        })
                 
                 app_status["unread_count"] = unread_count
+                log_message(f"Toplam okunmamış mesaj sayısı: {unread_count}")
                 
                 # Yeni mesajları bildir
                 if new_messages:
-                    log_message(f"{len(new_messages)} yeni mesaj bulundu.")
+                    log_message(f"{len(new_messages)} yeni mesaj bulundu, bildirimler gönderiliyor...")
                     send_telegram_notifications(new_messages)
                     app_status["new_messages_count"] += len(new_messages)
                     app_status["total_messages_found"] += len(new_messages)
@@ -320,8 +475,11 @@ class G2GScraper:
                     log_message("Yeni mesaj bulunamadı.")
             
         except Exception as e:
-            log_message(f"Mesaj kontrolü sırasında hata: {str(e)}")
-            app_status["errors"].append(f"Mesaj kontrolü sırasında hata: {str(e)}")
+            log_message(f"Mesaj kontrolü sırasında beklenmeyen hata: {str(e)}", is_error=True)
+            app_status["errors"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "message": f"Mesaj kontrolü sırasında beklenmeyen hata: {str(e)}"
+            })
             # Oturum düşmüş olabilir
             self.logged_in = False
             app_status["is_logged_in"] = False
@@ -386,6 +544,10 @@ HTML_TEMPLATE = """
             color: #7f8c8d;
             font-size: 0.8em;
         }
+        .error .time {
+            color: #7f8c8d;
+            font-size: 0.8em;
+        }
         button {
             background-color: #3498db;
             color: white;
@@ -415,7 +577,8 @@ HTML_TEMPLATE = """
         <p><strong>Okunmamış Mesaj Sayısı:</strong> {{ status.unread_count }}</p>
         <p><strong>Bulunan Toplam Mesaj:</strong> {{ status.total_messages_found }}</p>
         <p><strong>Son Kontrolde Bulunan Yeni Mesaj:</strong> {{ status.new_messages_count }}</p>
-    </div>
+
+        </div>
     
     <div class="card">
         <h2>Sistem Mesajları</h2>
@@ -456,6 +619,22 @@ HTML_TEMPLATE = """
 </html>
 """
 
+def log_message(message, is_error=False):
+    """Sistem mesajını logla"""
+    print(message)
+    
+    if is_error:
+        print(f"HATA: {message}")
+    
+    app_status["messages"].insert(0, {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "message": message
+    })
+    
+    # En fazla 100 mesaj sakla
+    if len(app_status["messages"]) > 100:
+        app_status["messages"] = app_status["messages"][:100]
+
 def send_telegram_message(message):
     """Telegram üzerinden mesaj gönder"""
     telegram_api_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -473,15 +652,19 @@ def send_telegram_message(message):
             log_message(f"Telegram mesajı başarıyla gönderildi")
             return True
         else:
-            log_message(f"Telegram mesajı gönderilirken hata: {response.text}")
-            app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                                         "message": f"Telegram mesajı gönderilirken hata: {response.text}"})
+            log_message(f"Telegram mesajı gönderilirken hata: {response.text}", is_error=True)
+            app_status["errors"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "message": f"Telegram mesajı gönderilirken hata: {response.text}"
+            })
             return False
     
     except Exception as e:
-        log_message(f"Telegram mesajı gönderilirken hata: {e}")
-        app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                                     "message": f"Telegram mesajı gönderilirken hata: {e}"})
+        log_message(f"Telegram mesajı gönderilirken hata: {e}", is_error=True)
+        app_status["errors"].append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "message": f"Telegram mesajı gönderilirken hata: {e}"
+        })
         return False
 
 def send_telegram_notifications(new_messages):
@@ -491,18 +674,6 @@ def send_telegram_notifications(new_messages):
         message_text = f"🔔 *G2G.com Yeni Mesaj!*\n\n👤 *Gönderen:* {msg['sender']}\n💬 *Mesaj:* {msg['message']}\n\n🔗 Cevaplamak için: https://www.g2g.com/chat/#/"
         
         send_telegram_message(message_text)
-
-def log_message(message):
-    """Sistem mesajını logla"""
-    print(message)
-    app_status["messages"].insert(0, {
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "message": message
-    })
-    
-    # En fazla 100 mesaj sakla
-    if len(app_status["messages"]) > 100:
-        app_status["messages"] = app_status["messages"][:100]
 
 # Flask route'ları
 @app.route('/')
@@ -560,9 +731,11 @@ def check_messages():
         scraper = G2GScraper()
         scraper.check_for_new_messages()
     except Exception as e:
-        log_message(f"Mesaj kontrolü sırasında beklenmeyen hata: {str(e)}")
-        app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                                     "message": f"Mesaj kontrolü sırasında beklenmeyen hata: {str(e)}"})
+        log_message(f"Mesaj kontrolü sırasında beklenmeyen hata: {str(e)}", is_error=True)
+        app_status["errors"].append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "message": f"Mesaj kontrolü sırasında beklenmeyen hata: {str(e)}"
+        })
         send_telegram_message(f"❌ Kritik hata: {str(e)}")
 
 def scheduler_thread():
