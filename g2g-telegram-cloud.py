@@ -9,6 +9,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.utils import ChromeType
 from dotenv import load_dotenv
 
 # .env dosyasını yükle (eğer varsa)
@@ -32,45 +34,25 @@ class G2GMonitor:
 
     def setup_driver(self):
         try:
-            # Render veya Heroku ortamı için Chrome ayarları
+            # Chrome ayarları
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--remote-debugging-port=9222") 
             
-            # Render ortamında mı çalışıyoruz?
-            is_cloud = os.environ.get('RENDER') or os.environ.get('HEROKU_APP_NAME')
+            # WebDriverManager kullanarak ChromeDriver'ı otomatik indir ve kur
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            if is_cloud:
-                print(f"Cloud ortamında çalışıyor: {'Render' if os.environ.get('RENDER') else 'Heroku'}")
-                
-                # Chrome binary path ayarlanmışsa kullan
-                if os.environ.get("GOOGLE_CHROME_BIN"):
-                    chrome_options.binary_location = os.environ.get("GOOGLE_CHROME_BIN")
-                    print(f"Chrome binary: {os.environ.get('GOOGLE_CHROME_BIN')}")
-                
-                if os.environ.get("CHROMEDRIVER_PATH"):
-                    print(f"ChromeDriver path: {os.environ.get('CHROMEDRIVER_PATH')}")
-                    service = Service(executable_path=os.environ.get("CHROMEDRIVER_PATH"))
-                    self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                else:
-                    # ChromeDriver path yoksa Selenium'un otomatik indirme mekanizmasını kullan
-                    print("ChromeDriver path belirtilmemiş, Selenium otomatik indirme kullanılıyor")
-                    self.driver = webdriver.Chrome(options=chrome_options)
-            else:
-                # Lokal ortamda normal çalıştır
-                print("Lokal ortamda çalışıyor")
-                self.driver = webdriver.Chrome(options=chrome_options)
-                
             print("WebDriver başarıyla başlatıldı")
             
         except Exception as e:
             print(f"WebDriver kurulurken hata: {e}")
-            # Hata mesajını Telegram'a gönderelim
+            # Hatayı telegram'a bildir
             self.send_telegram_message_static(f"⚠️ WebDriver başlatma hatası: {str(e)}")
-            raise e  # Hatayı yeniden fırlat
+            raise e
 
     def login(self):
         try:
@@ -80,8 +62,10 @@ class G2GMonitor:
                 self.send_telegram_message("⚠️ G2G kullanıcı adı veya şifresi çevresel değişkenlerde tanımlanmamış! Lütfen doğru şekilde ayarlayın.")
                 return False
                 
+            print(f"G2G.com login sayfasına gidiliyor...")
             self.driver.get("https://www.g2g.com/login")
             
+            print("Login sayfasının yüklenmesi bekleniyor...")
             # Login sayfasının yüklenmesini bekle
             WebDriverWait(self.driver, 30).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'].q-field__native"))
@@ -96,6 +80,7 @@ class G2GMonitor:
                 self.send_telegram_message("❌ G2G login sayfasında e-mail veya şifre alanları bulunamadı.")
                 return False
             
+            print("Kullanıcı adı ve şifre giriliyor...")
             # E-mail ve şifre gir
             email_inputs[0].send_keys(G2G_USERNAME)
             password_inputs[0].send_keys(G2G_PASSWORD)
@@ -111,11 +96,12 @@ class G2GMonitor:
                 self.send_telegram_message("❌ G2G login sayfasında giriş butonu bulunamadı.")
                 return False
             
+            print("Giriş butonuna tıklanıyor...")
             login_buttons[0].click()
             
-            # 2FA'yı kaldırdığınız için direk giriş yapmalı
-            # Giriş başarılı mı kontrol et - birkaç farklı yöntem deneyelim
+            # Giriş başarılı mı kontrol et
             try:
+                print("Giriş başarısı kontrol ediliyor...")
                 # Dashboard'a yönlendirme kontrolü
                 WebDriverWait(self.driver, 30).until(
                     EC.url_contains("g2g.com/dashboard")
@@ -126,22 +112,19 @@ class G2GMonitor:
             except TimeoutException:
                 # Ana sayfaya yönlendirme kontrolü
                 try:
+                    print("Ana sayfa yönlendirme kontrolü yapılıyor...")
                     WebDriverWait(self.driver, 10).until(
                         EC.url_contains("g2g.com")
                     )
-                    # Herhangi bir profil veya kullanıcı menüsü var mı kontrol et
-                    if self.driver.find_elements(By.XPATH, "//*[contains(text(), 'My Profile') or contains(text(), 'Profilim') or contains(text(), 'Account')]"):
+                    print(f"Şu anki URL: {self.driver.current_url}")
+                    
+                    # Eğer login sayfasında değilsek, giriş başarılı olabilir
+                    if "/login" not in self.driver.current_url:
                         self.logged_in = True
-                        print("G2G.com'a başarıyla giriş yapıldı.")
+                        print("G2G.com'a giriş yapılmış olabilir.")
                         return True
-                except:
-                    pass
-                
-                # Son kontrol: Oturum açma sayfa URL'sinde değilsek ve hata mesajı yoksa giriş başarılı olabilir
-                if "/login" not in self.driver.current_url:
-                    self.logged_in = True
-                    print("G2G.com'a giriş yapılmış olabilir.")
-                    return True
+                except Exception as e:
+                    print(f"Ana sayfa kontrolünde hata: {e}")
                     
                 print("G2G.com'a giriş yapılamadı.")
                 self.send_telegram_message("❌ G2G.com'a giriş yapılamadı. Lütfen kullanıcı adı ve şifrenizi kontrol edin.")
@@ -161,9 +144,11 @@ class G2GMonitor:
                     return
             
             # Sohbet sayfasına git
+            print("Chat sayfasına gidiliyor...")
             self.driver.get("https://www.g2g.com/chat/#/")
             
             # Sayfanın yüklenmesini bekle
+            print("Chat sayfasının yüklenmesi bekleniyor...")
             WebDriverWait(self.driver, 30).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".g-channel-item--main"))
             )
@@ -174,6 +159,7 @@ class G2GMonitor:
                 
                 if badge_elements:
                     message_count = int(badge_elements[0].text.strip())
+                    print(f"Mesaj sayısı: {message_count}")
                     
                     # Eğer son kontrol edilenden fazla mesaj varsa
                     if message_count > last_message_count:
@@ -303,7 +289,7 @@ def check_messages():
 def main():
     """Ana program döngüsü"""
     print("G2G Telegram Bildirim Sistemi başlatılıyor...")
-    print(f"Ortam: {'Render/Heroku' if os.environ.get('RENDER') or os.environ.get('HEROKU_APP_NAME') else 'Lokal'}")
+    print(f"Ortam: {'Render' if os.environ.get('RENDER') else 'Heroku' if os.environ.get('HEROKU_APP_NAME') else 'Lokal'}")
     
     # Başlangıç bildirimi gönder
     G2GMonitor.send_telegram_message_static("🚀 G2G Telegram Bildirim Sistemi başlatıldı! Mesajlarınız artık takip ediliyor.")
@@ -322,6 +308,7 @@ def main():
         schedule.every(24).hours.do(send_heartbeat)
         
         # Sürekli döngü
+        print("Mesaj kontrol döngüsü başlatılıyor...")
         while True:
             schedule.run_pending()
             time.sleep(1)
