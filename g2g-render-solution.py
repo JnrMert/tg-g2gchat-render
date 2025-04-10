@@ -10,7 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.utils import ChromeType
+# ChromeType import hatasını düzelttik - artık bu import'a ihtiyacımız yok
 from dotenv import load_dotenv
 
 # .env dosyasını yükle (eğer varsa)
@@ -43,6 +43,7 @@ class G2GMonitor:
             chrome_options.add_argument("--remote-debugging-port=9222") 
             
             # WebDriverManager kullanarak ChromeDriver'ı otomatik indir ve kur
+            print("ChromeDriverManager kullanılarak otomatik kurulum yapılıyor...")
             service = Service(ChromeDriverManager().install())
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             
