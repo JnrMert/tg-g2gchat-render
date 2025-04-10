@@ -4,6 +4,7 @@ import requests
 import schedule
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -30,22 +31,46 @@ class G2GMonitor:
         self.logged_in = False
 
     def setup_driver(self):
-        # Render veya Heroku ortamı için Chrome ayarları
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        # Cloud ortamında çalışıyorsak ChromeDriver için özel ayarlar
-        if os.environ.get('RENDER') or os.environ.get('HEROKU_APP_NAME'):
-            chrome_options.binary_location = os.environ.get("GOOGLE_CHROME_BIN")
-            self.driver = webdriver.Chrome(
-                executable_path=os.environ.get("CHROMEDRIVER_PATH"),
-                options=chrome_options
-            )
-        else:
-            # Lokal ortamda normal çalıştır
-            self.driver = webdriver.Chrome(options=chrome_options)
+        try:
+            # Render veya Heroku ortamı için Chrome ayarları
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            
+            # Render ortamında mı çalışıyoruz?
+            is_cloud = os.environ.get('RENDER') or os.environ.get('HEROKU_APP_NAME')
+            
+            if is_cloud:
+                print(f"Cloud ortamında çalışıyor: {'Render' if os.environ.get('RENDER') else 'Heroku'}")
+                
+                # Chrome binary path ayarlanmışsa kullan
+                if os.environ.get("GOOGLE_CHROME_BIN"):
+                    chrome_options.binary_location = os.environ.get("GOOGLE_CHROME_BIN")
+                    print(f"Chrome binary: {os.environ.get('GOOGLE_CHROME_BIN')}")
+                
+                if os.environ.get("CHROMEDRIVER_PATH"):
+                    print(f"ChromeDriver path: {os.environ.get('CHROMEDRIVER_PATH')}")
+                    service = Service(executable_path=os.environ.get("CHROMEDRIVER_PATH"))
+                    self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                else:
+                    # ChromeDriver path yoksa Selenium'un otomatik indirme mekanizmasını kullan
+                    print("ChromeDriver path belirtilmemiş, Selenium otomatik indirme kullanılıyor")
+                    self.driver = webdriver.Chrome(options=chrome_options)
+            else:
+                # Lokal ortamda normal çalıştır
+                print("Lokal ortamda çalışıyor")
+                self.driver = webdriver.Chrome(options=chrome_options)
+                
+            print("WebDriver başarıyla başlatıldı")
+            
+        except Exception as e:
+            print(f"WebDriver kurulurken hata: {e}")
+            # Hata mesajını Telegram'a gönderelim
+            self.send_telegram_message_static(f"⚠️ WebDriver başlatma hatası: {str(e)}")
+            raise e  # Hatayı yeniden fırlat
 
     def login(self):
         try:
@@ -68,6 +93,7 @@ class G2GMonitor:
             
             if not email_inputs or not password_inputs:
                 print("E-mail veya şifre alanları bulunamadı.")
+                self.send_telegram_message("❌ G2G login sayfasında e-mail veya şifre alanları bulunamadı.")
                 return False
             
             # E-mail ve şifre gir
@@ -82,6 +108,7 @@ class G2GMonitor:
             
             if not login_buttons:
                 print("Giriş butonu bulunamadı.")
+                self.send_telegram_message("❌ G2G login sayfasında giriş butonu bulunamadı.")
                 return False
             
             login_buttons[0].click()
@@ -224,6 +251,31 @@ class G2GMonitor:
             print(f"Telegram mesajı gönderilirken hata: {e}")
             return False
     
+    @staticmethod
+    def send_telegram_message_static(message):
+        """Statik method olarak Telegram mesajı gönder (instance olmadan çağrılabilir)"""
+        telegram_api_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        
+        try:
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "Markdown"
+            }
+            
+            response = requests.post(telegram_api_url, data=payload)
+            
+            if response.status_code == 200:
+                print(f"Telegram mesajı başarıyla gönderildi")
+                return True
+            else:
+                print(f"Telegram mesajı gönderilirken hata: {response.text}")
+                return False
+        
+        except Exception as e:
+            print(f"Telegram mesajı gönderilirken hata: {e}")
+            return False
+    
     def close(self):
         """Tarayıcıyı kapat"""
         try:
@@ -233,29 +285,50 @@ class G2GMonitor:
 
 def check_messages():
     """Zamanlayıcı tarafından çağrılacak fonksiyon"""
-    monitor = G2GMonitor()
     try:
-        monitor.check_for_new_messages()
+        monitor = G2GMonitor()
+        try:
+            monitor.check_for_new_messages()
+        except Exception as e:
+            print(f"Mesaj kontrolü sırasında hata: {e}")
+            # Hata mesajını Telegram'a gönder
+            monitor.send_telegram_message(f"⚠️ G2G kontrol hatası: {str(e)[:100]}...")
+        finally:
+            monitor.close()
     except Exception as e:
-        print(f"Kontrol sırasında beklenmeyen hata: {e}")
-    finally:
-        monitor.close()
+        print(f"G2GMonitor oluşturulurken beklenmeyen hata: {e}")
+        # Statik yöntemle Telegram'a hata mesajı gönder
+        G2GMonitor.send_telegram_message_static(f"❌ Kritik hata: {str(e)}")
 
 def main():
     """Ana program döngüsü"""
     print("G2G Telegram Bildirim Sistemi başlatılıyor...")
     print(f"Ortam: {'Render/Heroku' if os.environ.get('RENDER') or os.environ.get('HEROKU_APP_NAME') else 'Lokal'}")
     
-    # İlk kontrol
-    check_messages()
+    # Başlangıç bildirimi gönder
+    G2GMonitor.send_telegram_message_static("🚀 G2G Telegram Bildirim Sistemi başlatıldı! Mesajlarınız artık takip ediliyor.")
     
-    # Her 5 dakikada bir kontrol et
-    schedule.every(5).minutes.do(check_messages)
-    
-    # Sürekli döngü
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    try:
+        # İlk kontrol
+        check_messages()
+        
+        # Her 5 dakikada bir kontrol et
+        schedule.every(5).minutes.do(check_messages)
+        
+        # Heartbeat mesajı - sistemin hala çalıştığından emin olmak için
+        def send_heartbeat():
+            G2GMonitor.send_telegram_message_static("💓 G2G Bildirim Sistemi çalışıyor - Günlük kontrol")
+            
+        schedule.every(24).hours.do(send_heartbeat)
+        
+        # Sürekli döngü
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    except Exception as e:
+        print(f"Ana döngüde beklenmeyen hata: {e}")
+        G2GMonitor.send_telegram_message_static(f"❌ Program çöktü: {str(e)}")
+        raise e
 
 if __name__ == "__main__":
     main()
