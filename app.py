@@ -2,8 +2,10 @@ import os
 import time
 import requests
 import schedule
+import threading
 import json
 from datetime import datetime
+from flask import Flask, jsonify
 from dotenv import load_dotenv
 
 # .env dosyasını yükle (eğer varsa)
@@ -20,6 +22,19 @@ last_messages = set()
 # Session ve cookies
 session = requests.Session()
 
+# Flask uygulaması
+app = Flask(__name__)
+
+# Sistem durumunu takip etmek için global değişkenler
+app_status = {
+    "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    "is_logged_in": False,
+    "last_check": None,
+    "new_messages_count": 0,
+    "total_messages_found": 0,
+    "errors": []
+}
+
 class G2GAPIMonitor:
     def __init__(self):
         self.logged_in = False
@@ -34,11 +49,15 @@ class G2GAPIMonitor:
     
     def login(self):
         """G2G'ye API üzerinden giriş yap"""
+        global app_status
+        
         try:
             # Kullanıcı adı/şifre kontrolü
             if not G2G_USERNAME or not G2G_PASSWORD:
                 print("G2G kullanıcı adı veya şifresi tanımlanmamış!")
                 self.send_telegram_message("⚠️ G2G kullanıcı adı veya şifresi çevresel değişkenlerde tanımlanmamış! Lütfen doğru şekilde ayarlayın.")
+                app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                           "error": "G2G kullanıcı adı veya şifresi tanımlanmamış"})
                 return False
             
             print(f"G2G.com'a giriş yapılıyor...")
@@ -46,7 +65,10 @@ class G2GAPIMonitor:
             # Önce ana sayfaya giderek CSRF token veya gerekli cookieleri alalım
             response = self.session.get('https://www.g2g.com/')
             if response.status_code != 200:
-                print(f"Ana sayfa yüklenemedi. Status code: {response.status_code}")
+                error_msg = f"Ana sayfa yüklenemedi. Status code: {response.status_code}"
+                print(error_msg)
+                app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                           "error": error_msg})
                 return False
             
             # Login endpoint'i
@@ -68,29 +90,42 @@ class G2GAPIMonitor:
                     json_response = login_response.json()
                     if json_response.get('status') == 'success':
                         self.logged_in = True
+                        app_status["is_logged_in"] = True
                         print("G2G.com'a başarıyla giriş yapıldı.")
                         return True
                     else:
-                        print(f"Giriş başarısız. Hata: {json_response.get('message', 'Bilinmeyen hata')}")
+                        error_msg = f"Giriş başarısız. Hata: {json_response.get('message', 'Bilinmeyen hata')}"
+                        print(error_msg)
                         self.send_telegram_message(f"❌ G2G giriş başarısız: {json_response.get('message', 'Bilinmeyen hata')}")
+                        app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                                   "error": error_msg})
                         return False
                 except Exception as e:
-                    print(f"JSON yanıtı işlenirken hata: {e}")
+                    error_msg = f"JSON yanıtı işlenirken hata: {e}"
+                    print(error_msg)
+                    app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                               "error": error_msg})
             else:
-                print(f"Giriş başarısız. Status code: {login_response.status_code}")
+                error_msg = f"Giriş başarısız. Status code: {login_response.status_code}"
+                print(error_msg)
                 self.send_telegram_message(f"❌ G2G giriş başarısız. Status code: {login_response.status_code}")
+                app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                           "error": error_msg})
                 return False
             
             return False
         
         except Exception as e:
-            print(f"G2G.com'a giriş yapılırken hata oluştu: {e}")
+            error_msg = f"G2G.com'a giriş yapılırken hata oluştu: {e}"
+            print(error_msg)
             self.send_telegram_message(f"❌ G2G giriş hatası: {str(e)[:100]}...")
+            app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                       "error": error_msg})
             return False
 
     def check_for_new_messages(self):
         """API üzerinden mesajları kontrol et"""
-        global last_messages
+        global last_messages, app_status
         
         try:
             if not self.logged_in:
@@ -98,6 +133,7 @@ class G2GAPIMonitor:
                     return
             
             print("G2G mesajları kontrol ediliyor...")
+            app_status["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             # Mesajları almak için API endpoint
             messages_url = 'https://www.g2g.com/api/chat/channel/list'
@@ -147,6 +183,8 @@ class G2GAPIMonitor:
                         if new_messages:
                             print(f"{len(new_messages)} yeni mesaj bulundu.")
                             self.send_telegram_notifications(new_messages)
+                            app_status["new_messages_count"] += len(new_messages)
+                            app_status["total_messages_found"] += len(new_messages)
                         else:
                             print("Yeni mesaj bulunmadı.")
                     else:
@@ -156,17 +194,29 @@ class G2GAPIMonitor:
                             
                         # Oturum düşmüş olabilir, tekrar login olmayı dene
                         self.logged_in = False
+                        app_status["is_logged_in"] = False
                         
                 except Exception as e:
-                    print(f"JSON yanıtı işlenirken hata: {e}")
+                    error_msg = f"JSON yanıtı işlenirken hata: {e}"
+                    print(error_msg)
+                    app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                               "error": error_msg})
             else:
-                print(f"Mesajlar alınamadı. Status code: {response.status_code}")
+                error_msg = f"Mesajlar alınamadı. Status code: {response.status_code}"
+                print(error_msg)
+                app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                           "error": error_msg})
                 # Oturum düşmüş olabilir, tekrar login olmayı dene
                 self.logged_in = False
+                app_status["is_logged_in"] = False
                 
         except Exception as e:
-            print(f"Mesaj kontrolü sırasında hata: {e}")
+            error_msg = f"Mesaj kontrolü sırasında hata: {e}"
+            print(error_msg)
+            app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                       "error": error_msg})
             self.logged_in = False
+            app_status["is_logged_in"] = False
     
     def send_telegram_notifications(self, new_messages):
         """Telegram üzerinden bildirimleri gönder"""
@@ -193,11 +243,17 @@ class G2GAPIMonitor:
                 print(f"Telegram mesajı başarıyla gönderildi")
                 return True
             else:
-                print(f"Telegram mesajı gönderilirken hata: {response.text}")
+                error_msg = f"Telegram mesajı gönderilirken hata: {response.text}"
+                print(error_msg)
+                app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                           "error": error_msg})
                 return False
         
         except Exception as e:
-            print(f"Telegram mesajı gönderilirken hata: {e}")
+            error_msg = f"Telegram mesajı gönderilirken hata: {e}"
+            print(error_msg)
+            app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                       "error": error_msg})
             return False
     
     @staticmethod
@@ -225,47 +281,76 @@ class G2GAPIMonitor:
             print(f"Telegram mesajı gönderilirken hata: {e}")
             return False
 
+# Flask route'ları
+@app.route('/')
+def index():
+    """Ana sayfa - sistem durumunu gösterir"""
+    return jsonify({
+        "status": "running",
+        "message": "G2G Telegram Bildirim Sistemi çalışıyor",
+        "stats": app_status
+    })
+
+@app.route('/health')
+def health():
+    """Sağlık kontrolü - sistemin çalışıp çalışmadığını kontrol eder"""
+    return jsonify({
+        "status": "ok",
+        "uptime": str(datetime.now() - datetime.strptime(app_status["started_at"], "%Y-%m-%d %H:%M:%S"))
+    })
+
+@app.route('/force-check')
+def force_check():
+    """Manuel kontrol - hemen bir kontrol yapar"""
+    threading.Thread(target=check_messages).start()
+    return jsonify({
+        "status": "ok",
+        "message": "Mesaj kontrolü başlatıldı"
+    })
+
 def check_messages():
     """Zamanlayıcı tarafından çağrılacak fonksiyon"""
     try:
         monitor = G2GAPIMonitor()
         monitor.check_for_new_messages()
     except Exception as e:
-        print(f"Mesaj kontrolü sırasında beklenmeyen hata: {e}")
+        error_msg = f"Mesaj kontrolü sırasında beklenmeyen hata: {e}"
+        print(error_msg)
+        app_status["errors"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                   "error": error_msg})
         # Statik yöntemle Telegram'a hata mesajı gönder
         G2GAPIMonitor.send_telegram_message_static(f"❌ Kritik hata: {str(e)}")
 
-def main():
-    """Ana program döngüsü"""
-    print("G2G Telegram Bildirim Sistemi başlatılıyor...")
-    print(f"Zaman: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Ortam: {'Render' if os.environ.get('RENDER') else 'Heroku' if os.environ.get('HEROKU_APP_NAME') else 'Lokal'}")
+def scheduler_thread():
+    """Zamanlayıcı thread'i"""
+    print("Zamanlayıcı başlatılıyor...")
     
+    # Her 5 dakikada bir kontrol et
+    schedule.every(5).minutes.do(check_messages)
+    
+    # Heartbeat mesajı - sistemin hala çalıştığından emin olmak için
+    def send_heartbeat():
+        G2GAPIMonitor.send_telegram_message_static("💓 G2G Bildirim Sistemi çalışıyor - Günlük kontrol")
+        
+    schedule.every(24).hours.do(send_heartbeat)
+    
+    # Sürekli döngü
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == "__main__":
     # Başlangıç bildirimi gönder
     G2GAPIMonitor.send_telegram_message_static("🚀 G2G Telegram Bildirim Sistemi başlatıldı! Mesajlarınız artık takip ediliyor.")
     
-    try:
-        # İlk kontrol
-        check_messages()
-        
-        # Her 5 dakikada bir kontrol et
-        schedule.every(5).minutes.do(check_messages)
-        
-        # Heartbeat mesajı - sistemin hala çalıştığından emin olmak için
-        def send_heartbeat():
-            G2GAPIMonitor.send_telegram_message_static("💓 G2G Bildirim Sistemi çalışıyor - Günlük kontrol")
-            
-        schedule.every(24).hours.do(send_heartbeat)
-        
-        # Sürekli döngü
-        print("Mesaj kontrol döngüsü başlatılıyor...")
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-    except Exception as e:
-        print(f"Ana döngüde beklenmeyen hata: {e}")
-        G2GAPIMonitor.send_telegram_message_static(f"❌ Program çöktü: {str(e)}")
-        raise e
-
-if __name__ == "__main__":
-    main()
+    # İlk kontrol
+    check_messages()
+    
+    # Zamanlayıcıyı ayrı bir thread'de başlat
+    scheduler = threading.Thread(target=scheduler_thread)
+    scheduler.daemon = True
+    scheduler.start()
+    
+    # Flask uygulamasını başlat
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
