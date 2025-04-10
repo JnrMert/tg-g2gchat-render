@@ -3,7 +3,7 @@ services:
     name: g2g-telegram-notifier
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python g2g-render-solution.py
+    startCommand: python main.py
     plan: free
     envVars:
       - key: RENDER
